@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Certificate for {{ recipient_name }}</title>
+    <style>
+      body {
+        font-family: "Georgia", serif;
+        color: #222;
+        margin: 0;
+        padding: 60px;
+        text-align: center;
+      }
+      .border {
+        border: 8px double #b8860b;
+        padding: 60px 40px;
+      }
+      h1 {
+        font-size: 2.4em;
+        color: #b8860b;
+        margin-bottom: 0;
+      }
+      .subtitle {
+        letter-spacing: 4px;
+        text-transform: uppercase;
+        color: #666;
+      }
+      .recipient {
+        font-size: 1.8em;
+        margin: 32px 0;
+        color: #1a3c6e;
+      }
+      .body-text {
+        font-size: 1.1em;
+        margin-bottom: 40px;
+      }
+      .footer {
+        display: flex;
+        justify-content: space-around;
+        margin-top: 60px;
+        font-size: 0.9em;
+        color: #444;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="border">
+      <div class="subtitle">Certificate of Achievement</div>
+      <h1>{{ course_name }}</h1>
+      <div class="recipient">{{ recipient_name }}</div>
+      <div class="body-text">
+        has successfully completed the requirements on {{ completion_date }}.
+      </div>
+      <div class="footer">
+        <div>{{ issuer_name }}</div>
+        <div>{{ completion_date }}</div>
+      </div>
+    </div>
+  </body>
+</html>

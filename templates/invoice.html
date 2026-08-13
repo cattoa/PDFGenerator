@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Invoice {{ invoice_number }}</title>
+    <style>
+      body {
+        font-family: Arial, Helvetica, sans-serif;
+        color: #222;
+        margin: 40px;
+      }
+      h1 {
+        color: #1a3c6e;
+        margin-bottom: 0;
+      }
+      .meta {
+        color: #666;
+        margin-top: 4px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 24px;
+      }
+      th,
+      td {
+        border: 1px solid #ccc;
+        padding: 8px 12px;
+        text-align: left;
+      }
+      th {
+        background: #f2f4f7;
+      }
+      .total {
+        text-align: right;
+        font-weight: bold;
+        margin-top: 16px;
+        font-size: 1.1em;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Invoice</h1>
+    <div class="meta">
+      Invoice #{{ invoice_number }} &middot; {{ invoice_date }}
+    </div>
+
+    <table>
+      <tr>
+        <th>Bill To</th>
+        <td>{{ customer_name }}</td>
+      </tr>
+    </table>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Description</th>
+          <th>Qty</th>
+          <th>Unit Price</th>
+          <th>Line Total</th>
+          <th>Details</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for line in invoice_lines %}
+        <tr>
+          <td>{{ line.description }}</td>
+          <td>{{ line.quantity }}</td>
+          <td>{{ line.unit_price }}</td>
+          <td>{{ line.line_total }}</td>
+          <td>
+            <ul>
+              {% for detail in line.invoice_details %}
+              <li>{{ detail.sku }} @ {{ detail.warehouse }}</li>
+              {% endfor %}
+            </ul>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="total">Total: {{ amount }}</div>
+  </body>
+</html>
