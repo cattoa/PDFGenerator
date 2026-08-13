@@ -172,8 +172,8 @@ returns `404 Not Found`.
 
 Either:
 
-- Call `POST /templates` with the HTML content (see above) — no file system
-  or server access needed, or
+- Call `POST /templates` (see above) with your template's markup in the
+  `html` field — no file system or server access needed, or
 - Add a new `.html` file directly under `templates/`, using `{{ tag_name }}`
   for any dynamic value; it's picked up automatically.
 
