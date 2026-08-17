@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import io
+import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
+from app.config import get_settings
 
 # A tag value can be a scalar, or an array/object of tag values — this lets
 # templates loop over structured data (e.g. a list of invoice line items)
@@ -27,6 +31,7 @@ from app.templates_service import (
     TemplateAlreadyExistsError,
     TemplateNotFoundError,
     TemplateValidationError,
+    delete_template,
     get_template_placeholders,
     get_template_tag_schema,
     list_templates,
@@ -37,6 +42,7 @@ from app.templates_service import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    get_settings().output_dir.mkdir(parents=True, exist_ok=True)
     renderer = PdfRenderer()
     await renderer.start()
     app.state.pdf_renderer = renderer
@@ -74,6 +80,10 @@ class GenerateRequest(BaseModel):
             "strings, numbers, booleans, or arrays/objects — e.g. a list of invoice "
             "line items — for templates that loop over them with Jinja2 {% for %}."
         ),
+    )
+    save_to_disk: bool = Field(
+        False,
+        description="If true, also write a hardcopy of the generated PDF to the configured output directory",
     )
 
 
@@ -121,6 +131,15 @@ def get_template_tags(template_id: str) -> dict:
     }
 
 
+@app.delete("/templates/{template_id}", status_code=204)
+def delete_template_endpoint(template_id: str) -> Response:
+    try:
+        delete_template(template_id)
+    except TemplateNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Response(status_code=204)
+
+
 @app.post("/generate")
 async def generate_pdf(
     request: GenerateRequest,
@@ -143,8 +162,19 @@ async def generate_pdf(
     pdf_bytes = await renderer.render(html)
 
     filename = f"{request.template_id}.pdf"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+
+    if request.save_to_disk:
+        settings = get_settings()
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+        hardcopy_name = f"{request.template_id}-{timestamp}-{uuid.uuid4().hex[:8]}.pdf"
+        hardcopy_path = settings.output_dir / hardcopy_name
+        settings.output_dir.mkdir(parents=True, exist_ok=True)
+        hardcopy_path.write_bytes(pdf_bytes)
+        headers["X-Hardcopy-Path"] = str(hardcopy_path)
+
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers=headers,
     )

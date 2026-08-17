@@ -35,11 +35,19 @@ class PdfRenderer:
             raise
 
     async def stop(self) -> None:
+        # The driver connection can already be gone during interpreter/uvicorn
+        # shutdown, so close/stop calls racing that teardown are expected.
         if self._browser is not None:
-            await self._browser.close()
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
             self._browser = None
         if self._playwright is not None:
-            await self._playwright.stop()
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
             self._playwright = None
 
     async def render(self, html: str) -> bytes:

@@ -1,6 +1,7 @@
 """Discovery, validation and rendering helpers for HTML PDF templates.
 
-Templates live as .html files under the top-level ``templates`` directory.
+Templates live as .html files under the configured templates directory
+(``Settings.templates_dir``, default ``<project root>/templates``).
 A template's public id is its filename without the ``.html`` extension.
 Placeholders are plain Jinja2 variables, e.g. ``{{ customer_name }}``.
 """
@@ -8,11 +9,12 @@ Placeholders are plain Jinja2 variables, e.g. ``{{ customer_name }}``.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, Template, TemplateSyntaxError, meta, nodes, select_autoescape
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+from app.config import get_settings
 
 # Template ids become filenames, so only allow a conservative charset —
 # this also rules out path traversal ("..", "/", "\\") by construction.
@@ -22,12 +24,23 @@ _TEMPLATE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 # and small; this guards against accidental/abusive multi-MB uploads).
 MAX_TEMPLATE_BYTES = 512_000
 
-# autoescape is enabled for .html templates so tag values can never inject
-# raw HTML/script markup into the rendered document.
-_env = Environment(
-    loader=FileSystemLoader(str(TEMPLATES_DIR)),
-    autoescape=select_autoescape(enabled_extensions=("html",)),
-)
+
+def _templates_dir() -> Path:
+    return get_settings().templates_dir
+
+
+@lru_cache(maxsize=None)
+def _environment_for(templates_dir: Path) -> Environment:
+    # autoescape is enabled for .html templates so tag values can never inject
+    # raw HTML/script markup into the rendered document.
+    return Environment(
+        loader=FileSystemLoader(str(templates_dir)),
+        autoescape=select_autoescape(enabled_extensions=("html",)),
+    )
+
+
+def _env() -> Environment:
+    return _environment_for(_templates_dir())
 
 
 class TemplateNotFoundError(Exception):
@@ -44,11 +57,11 @@ class TemplateAlreadyExistsError(Exception):
 
 def _resolve_filename(template_id: str) -> str:
     # Allowlist check: only simple ids that map to an existing .html file in
-    # TEMPLATES_DIR are accepted. This blocks path traversal (e.g. "../secret").
+    # the templates dir are accepted. This blocks path traversal (e.g. "../secret").
     if not template_id or "/" in template_id or "\\" in template_id or ".." in template_id:
         raise TemplateNotFoundError(f"Template '{template_id}' not found")
     filename = f"{template_id}.html"
-    if not (TEMPLATES_DIR / filename).is_file():
+    if not (_templates_dir() / filename).is_file():
         raise TemplateNotFoundError(f"Template '{template_id}' not found")
     return filename
 
@@ -56,8 +69,8 @@ def _resolve_filename(template_id: str) -> str:
 def get_template_placeholders(template_id: str) -> set[str]:
     """Return the set of top-level tag names referenced by a template."""
     filename = _resolve_filename(template_id)
-    source = (TEMPLATES_DIR / filename).read_text(encoding="utf-8")
-    ast = _env.parse(source)
+    source = (_templates_dir() / filename).read_text(encoding="utf-8")
+    ast = _env().parse(source)
     return meta.find_undeclared_variables(ast)
 
 
@@ -161,8 +174,8 @@ def get_template_tag_schema(template_id: str) -> dict[str, TagSchema]:
     caller needs to supply.
     """
     filename = _resolve_filename(template_id)
-    source = (TEMPLATES_DIR / filename).read_text(encoding="utf-8")
-    ast = _env.parse(source)
+    source = (_templates_dir() / filename).read_text(encoding="utf-8")
+    ast = _env().parse(source)
 
     top_level = meta.find_undeclared_variables(ast)
     schema: dict[str, TagSchema] = dict.fromkeys(top_level)
@@ -175,7 +188,7 @@ def get_template_tag_schema(template_id: str) -> dict[str, TagSchema]:
 def load_template(template_id: str) -> Template:
     """Return the compiled Jinja2 template for a given template id."""
     filename = _resolve_filename(template_id)
-    return _env.get_template(filename)
+    return _env().get_template(filename)
 
 
 def describe_template(template_id: str) -> dict:
@@ -190,7 +203,7 @@ def describe_template(template_id: str) -> dict:
 
 def list_templates() -> list[dict]:
     """Return metadata (id, display name, required tags) for every template."""
-    return [describe_template(path.stem) for path in sorted(TEMPLATES_DIR.glob("*.html"))]
+    return [describe_template(path.stem) for path in sorted(_templates_dir().glob("*.html"))]
 
 
 def save_template(template_id: str, html: str, *, overwrite: bool = False) -> tuple[dict, bool]:
@@ -214,18 +227,25 @@ def save_template(template_id: str, html: str, *, overwrite: bool = False) -> tu
         raise TemplateValidationError(f"Template HTML content exceeds the {MAX_TEMPLATE_BYTES}-byte limit")
 
     try:
-        _env.parse(html)
+        _env().parse(html)
     except TemplateSyntaxError as exc:
         raise TemplateValidationError(f"Invalid Jinja2 template syntax: {exc.message}") from exc
 
-    target = TEMPLATES_DIR / f"{template_id}.html"
+    templates_dir = _templates_dir()
+    target = templates_dir / f"{template_id}.html"
     if target.exists() and not overwrite:
         raise TemplateAlreadyExistsError(f"Template '{template_id}' already exists")
     created = not target.exists()
 
-    TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+    templates_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = target.with_suffix(".html.tmp")
     tmp_path.write_text(html, encoding="utf-8")
     tmp_path.replace(target)
 
     return describe_template(template_id), created
+
+
+def delete_template(template_id: str) -> None:
+    """Delete a template file. Raises ``TemplateNotFoundError`` if it doesn't exist."""
+    filename = _resolve_filename(template_id)
+    (_templates_dir() / filename).unlink()

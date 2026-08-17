@@ -10,6 +10,8 @@ app/
   main.py             FastAPI app: /templates, /templates/{id}/tags, /generate
   templates_service.py  Template discovery, id resolution, placeholder detection
   pdf_service.py      Shared headless-Chromium HTML -> PDF renderer
+  config.py           Settings (templates dir, output dir, host/port) via env vars
+  cli.py              `pdfgenerator` console-script entry point
 templates/
   invoice.html         Sample template ({{ invoice_number }}, {{ customer_name }}, ...)
   certificate.html     Sample template ({{ recipient_name }}, {{ course_name }}, ...)
@@ -17,6 +19,66 @@ templates/
 
 Templates are plain HTML files using Jinja2 `{{ tag }}` placeholders. A
 template's id is its filename without the `.html` extension.
+
+## Configuration
+
+Settings are read from `PDFGEN_*` environment variables (or a `.env` file in
+the working directory):
+
+| Variable               | Default               | Purpose                                               |
+| ---------------------- | --------------------- | ----------------------------------------------------- |
+| `PDFGEN_TEMPLATES_DIR` | `<project>/templates` | Directory of `.html` templates                        |
+| `PDFGEN_OUTPUT_DIR`    | `<project>/output`    | Directory hardcopies are written to (see `/generate`) |
+| `PDFGEN_HOST`          | `127.0.0.1`           | Bind host used by the `pdfgenerator` CLI              |
+| `PDFGEN_PORT`          | `8000`                | Bind port used by the `pdfgenerator` CLI              |
+
+When installed as a package (see below), `PDFGEN_TEMPLATES_DIR` and
+`PDFGEN_OUTPUT_DIR` should normally be set explicitly, since the packaged
+install has no project-root `templates/`/`output/` folder alongside it.
+
+## Install as a package
+
+```powershell
+python -m pip install .
+```
+
+This installs the `pdfgenerator` console script:
+
+```powershell
+$env:PDFGEN_TEMPLATES_DIR = "C:\path\to\templates"
+$env:PDFGEN_OUTPUT_DIR = "C:\path\to\output"
+pdfgenerator --host 0.0.0.0 --port 8000
+```
+
+For local development, install in editable mode instead (`pip install -e .`).
+
+## Deploying to a server
+
+Build a wheel and ship just that, rather than copying the working tree:
+
+```powershell
+python -m pip install build
+python -m build
+```
+
+Copy `dist/pdfgenerator-1.0.0-py3-none-any.whl` to the server, along with your
+`templates/` directory (create an `output/` directory too) — these live
+outside the package and are located via `PDFGEN_TEMPLATES_DIR` /
+`PDFGEN_OUTPUT_DIR`. On the server:
+
+```bash
+python -m venv .venv
+.venv/bin/pip install pdfgenerator-1.0.0-py3-none-any.whl
+.venv/bin/playwright install chromium --with-deps
+export PDFGEN_TEMPLATES_DIR=/opt/pdfgenerator/templates
+export PDFGEN_OUTPUT_DIR=/opt/pdfgenerator/output
+export PDFGEN_HOST=0.0.0.0
+.venv/bin/python -m app.cli
+```
+
+Alternatively, copy the source tree (`app/`, `templates/`, `requirements.txt`,
+`pyproject.toml` — skip `.venv/`, `output/`, `__pycache__/`) and install with
+`pip install -r requirements.txt` on the server instead of using a wheel.
 
 ## Setup
 
@@ -119,6 +181,11 @@ per line item, looped over with `{% for detail in line.invoice_details %}`
 and accessed as `detail.sku` — arrays can be nested inside arrays to any
 depth.
 
+### `DELETE /templates/{template_id}`
+
+Delete a template file. Responds `204 No Content` on success; `404 Not
+Found` if `template_id` doesn't exist.
+
 ### `POST /generate`
 
 Render a template with tags and return the PDF.
@@ -128,6 +195,7 @@ Request body:
 ```json
 {
   "template_id": "invoice",
+  "save_to_disk": false,
   "tags": {
     "invoice_number": "INV-1001",
     "invoice_date": "2026-08-13",
@@ -162,6 +230,11 @@ Jinja2's `{% for line in invoice_lines %}` to render one row per line item,
 and each line item loops over its own `invoice_details` array (a list, not
 just a single object) with `{% for detail in line.invoice_details %}` and
 `detail.sku`.
+
+`save_to_disk` (default `false`) additionally writes a hardcopy of the
+rendered PDF to `PDFGEN_OUTPUT_DIR`, named
+`<template_id>-<UTC timestamp>-<random hex>.pdf`. The saved path is also
+returned in the `X-Hardcopy-Path` response header.
 
 Response: `application/pdf` binary stream (downloadable file).
 
