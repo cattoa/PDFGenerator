@@ -38,6 +38,7 @@ from app.templates_service import (
     load_template,
     migrate_template,
     migration_target_environment,
+    read_template_source,
     save_template,
 )
 
@@ -94,6 +95,12 @@ class TemplateSummary(BaseModel):
     tag_schema: dict[str, TagSchema]
 
 
+class TemplateSource(BaseModel):
+    template_id: str
+    environment: str
+    html: str
+
+
 class GenerateRequest(BaseModel):
     template_id: str = Field(..., description="Id of the template to use (its filename without .html)")
     environment: str = _environment_field()
@@ -144,6 +151,21 @@ def health() -> dict[str, str]:
 @app.get("/templates", response_model=list[TemplateSummary])
 def get_templates(environment: EnvironmentQuery) -> list[dict]:
     return list_templates(environment)
+
+
+@app.get("/templates/{template_id}", response_model=TemplateSource)
+def get_template_html(template_id: str, environment: EnvironmentQuery) -> dict:
+    """Return one template's raw HTML source.
+
+    `html` is the stored file verbatim — Jinja2 `{{ tag }}` placeholders
+    unrendered — so it can be edited and posted straight back to
+    `POST /templates` with `overwrite: true`. Use `/generate` for a filled-in PDF.
+    """
+    try:
+        html = read_template_source(template_id, environment)
+    except TemplateNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"template_id": template_id, "environment": environment, "html": html}
 
 
 @app.post("/templates", response_model=TemplateSummary)

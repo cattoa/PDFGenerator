@@ -35,8 +35,8 @@ reads and writes:
 
 The tag is a JSON body field on `POST` requests (`/templates`, `/generate`,
 `/templates/{id}/migrate`) and a **query parameter** on the requests that have
-no body (`GET /templates`, `GET /templates/{id}/tags`,
-`DELETE /templates/{id}`). It is always required — omitting it, or sending an
+no body (`GET /templates`, `GET /templates/{id}`,
+`GET /templates/{id}/tags`, `DELETE /templates/{id}`). It is always required — omitting it, or sending an
 empty string, returns `422 Unprocessable Entity`.
 
 The two stores are fully independent: the same template id can hold different
@@ -157,6 +157,33 @@ GET /templates?environment=Development
 ```
 
 Each entry echoes the `environment` it was read from.
+
+### `GET /templates/{template_id}`
+
+Fetch one template's raw HTML source.
+
+```
+GET /templates/Wilderness_Booking_Invoice?environment=Development
+```
+
+Responds `200 OK` with JSON:
+
+```json
+{
+  "template_id": "Wilderness_Booking_Invoice",
+  "environment": "Development",
+  "html": "<html><body><h1>Invoice {{ invoice_number }}</h1></body></html>"
+}
+```
+
+`html` is the stored file verbatim, with Jinja2 `{{ tag }}` placeholders
+**unrendered** — so it can be edited and posted straight back to
+[`POST /templates`](#post-templates) with `overwrite: true`. Use
+[`POST /generate`](#post-generate) instead if you want a filled-in PDF.
+
+Errors: `404 Not Found` if the id doesn't exist **in that environment** (a
+template that only exists in the other store is a 404 here); `422` if
+`environment` is missing.
 
 ### `POST /templates`
 

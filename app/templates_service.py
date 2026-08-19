@@ -81,11 +81,20 @@ def _resolve_filename(template_id: str, environment: str) -> str:
     return filename
 
 
+def read_template_source(template_id: str, environment: str) -> str:
+    """Return a template's raw, unrendered HTML source.
+
+    This is the exact file content as stored — Jinja2 ``{{ tag }}``
+    placeholders intact — so it can be round-tripped back through
+    ``save_template`` after editing.
+    """
+    filename = _resolve_filename(template_id, environment)
+    return (_templates_dir(environment) / filename).read_text(encoding="utf-8")
+
+
 def get_template_placeholders(template_id: str, environment: str) -> set[str]:
     """Return the set of top-level tag names referenced by a template."""
-    filename = _resolve_filename(template_id, environment)
-    source = (_templates_dir(environment) / filename).read_text(encoding="utf-8")
-    ast = _env(environment).parse(source)
+    ast = _env(environment).parse(read_template_source(template_id, environment))
     return meta.find_undeclared_variables(ast)
 
 
@@ -188,9 +197,7 @@ def get_template_tag_schema(template_id: str, environment: str) -> dict[str, Tag
     ``line``, ``detail``) are excluded — they are not top-level tags the
     caller needs to supply.
     """
-    filename = _resolve_filename(template_id, environment)
-    source = (_templates_dir(environment) / filename).read_text(encoding="utf-8")
-    ast = _env(environment).parse(source)
+    ast = _env(environment).parse(read_template_source(template_id, environment))
 
     top_level = meta.find_undeclared_variables(ast)
     schema: dict[str, TagSchema] = dict.fromkeys(top_level)
