@@ -337,7 +337,7 @@ exist in that environment. The other environment's copy, if any, is untouched.
 
 ### `POST /generate`
 
-Render a template with tags and return the PDF.
+Render a template with tags and return the PDF as base64 in a JSON response.
 
 Request body:
 
@@ -383,10 +383,32 @@ just a single object) with `{% for detail in line.invoice_details %}` and
 
 `save_to_disk` (default `false`) additionally writes a hardcopy of the
 rendered PDF to `PDFGEN_OUTPUT_DIR`, named
-`<template_id>-<UTC timestamp>-<random hex>.pdf`. The saved path is also
-returned in the `X-Hardcopy-Path` response header.
+`<template_id>-<UTC timestamp>-<random hex>.pdf`.
 
-Response: `application/pdf` binary stream (downloadable file).
+Response: `200 OK` with JSON.
+
+```json
+{
+  "template_id": "invoice",
+  "environment": "Production",
+  "filename": "invoice.pdf",
+  "media_type": "application/pdf",
+  "size_bytes": 24680,
+  "pdf_base64": "JVBERi0xLjQK...",
+  "hardcopy_path": null
+}
+```
+
+The PDF itself is `pdf_base64` — base64-decode that field to get the file.
+`size_bytes` is the size of the *decoded* PDF, and `filename` is a suggested
+name for it. `hardcopy_path` is where the hardcopy was written when
+`save_to_disk` was `true`, and `null` otherwise.
+
+Decoding it from the shell:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/generate   -H 'Content-Type: application/json'   -d '{"template_id":"invoice","environment":"Development","tags":{...}}'   | python -c "import base64,json,sys; open('invoice.pdf','wb').write(base64.b64decode(json.load(sys.stdin)['pdf_base64']))"
+```
 
 Missing required tags return `400 Bad Request`; a `template_id` that doesn't
 exist **in the requested environment** returns `404 Not Found`.

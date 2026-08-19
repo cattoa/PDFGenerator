@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import io
+import base64
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated, AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import PRODUCTION_ENVIRONMENT, get_settings
@@ -115,6 +115,19 @@ class GenerateRequest(BaseModel):
     save_to_disk: bool = Field(
         False,
         description="If true, also write a hardcopy of the generated PDF to the configured output directory",
+    )
+
+
+class GenerateResponse(BaseModel):
+    template_id: str
+    environment: str
+    filename: str = Field(..., description="Suggested filename for the PDF, e.g. invoice.pdf")
+    media_type: str = Field("application/pdf", description="Media type of the decoded content")
+    size_bytes: int = Field(..., description="Size of the decoded PDF in bytes")
+    pdf_base64: str = Field(..., description="The generated PDF, base64-encoded — decode this to get the file")
+    hardcopy_path: str | None = Field(
+        None,
+        description="Where the hardcopy was written when save_to_disk was true; null otherwise",
     )
 
 
@@ -230,11 +243,17 @@ def delete_template_endpoint(template_id: str, environment: EnvironmentQuery) ->
     return Response(status_code=204)
 
 
-@app.post("/generate")
+@app.post("/generate", response_model=GenerateResponse)
 async def generate_pdf(
     request: GenerateRequest,
     renderer: PdfRenderer = Depends(get_pdf_renderer),
-) -> StreamingResponse:
+) -> dict:
+    """Render a template with the supplied tags and return the PDF as base64 JSON.
+
+    The PDF arrives in `pdf_base64` rather than as a binary body, so callers
+    decode that field to get the file. With `save_to_disk: true` the hardcopy's
+    location comes back in `hardcopy_path`.
+    """
     try:
         placeholders = get_template_placeholders(request.template_id, request.environment)
         template = load_template(request.template_id, request.environment)
@@ -251,9 +270,7 @@ async def generate_pdf(
     html = template.render(**request.tags)
     pdf_bytes = await renderer.render(html)
 
-    filename = f"{request.template_id}.pdf"
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-
+    hardcopy_path: Path | None = None
     if request.save_to_disk:
         settings = get_settings()
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
@@ -261,10 +278,13 @@ async def generate_pdf(
         hardcopy_path = settings.output_dir / hardcopy_name
         settings.output_dir.mkdir(parents=True, exist_ok=True)
         hardcopy_path.write_bytes(pdf_bytes)
-        headers["X-Hardcopy-Path"] = str(hardcopy_path)
 
-    return StreamingResponse(
-        io.BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers=headers,
-    )
+    return {
+        "template_id": request.template_id,
+        "environment": request.environment,
+        "filename": f"{request.template_id}.pdf",
+        "media_type": "application/pdf",
+        "size_bytes": len(pdf_bytes),
+        "pdf_base64": base64.b64encode(pdf_bytes).decode("ascii"),
+        "hardcopy_path": None if hardcopy_path is None else str(hardcopy_path),
+    }
