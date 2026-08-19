@@ -98,7 +98,7 @@ python -m pip install build
 python -m build
 ```
 
-Copy `dist/pdfgenerator-1.1.0-py3-none-any.whl` to the server, along with your
+Copy `dist/pdfgenerator-2.0.0-py3-none-any.whl` to the server, along with your
 `templates/` directory — including its `production/` sub-directory — (create an
 `output/` directory too) — these live outside the package and are located via
 `PDFGEN_TEMPLATES_DIR` / `PDFGEN_PRODUCTION_TEMPLATES_DIR` /
@@ -106,7 +106,7 @@ Copy `dist/pdfgenerator-1.1.0-py3-none-any.whl` to the server, along with your
 
 ```bash
 python -m venv .venv
-.venv/bin/pip install pdfgenerator-1.1.0-py3-none-any.whl
+.venv/bin/pip install pdfgenerator-2.0.0-py3-none-any.whl
 .venv/bin/playwright install chromium --with-deps
 export PDFGEN_TEMPLATES_DIR=/opt/pdfgenerator/templates
 export PDFGEN_OUTPUT_DIR=/opt/pdfgenerator/output

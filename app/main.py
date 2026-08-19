@@ -78,7 +78,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="PDF Generator API",
     description="Consume tags to fill a selected HTML template and generate a PDF.",
-    version="1.1.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
