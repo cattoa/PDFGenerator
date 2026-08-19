@@ -28,10 +28,6 @@ from app.config import (
 # this also rules out path traversal ("..", "/", "\\") by construction.
 _TEMPLATE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
-# Defensive upper bound on uploaded template size (HTML templates are text
-# and small; this guards against accidental/abusive multi-MB uploads).
-MAX_TEMPLATE_BYTES = 512_000
-
 def _templates_dir(environment: str) -> Path:
     return get_settings().templates_dir_for(environment)
 
@@ -249,8 +245,13 @@ def save_template(template_id: str, html: str, environment: str, *, overwrite: b
     if not html or not html.strip():
         raise TemplateValidationError("Template HTML content must not be empty")
 
-    if len(html.encode("utf-8")) > MAX_TEMPLATE_BYTES:
-        raise TemplateValidationError(f"Template HTML content exceeds the {MAX_TEMPLATE_BYTES}-byte limit")
+    max_bytes = get_settings().max_template_bytes
+    size = len(html.encode("utf-8"))
+    if size > max_bytes:
+        raise TemplateValidationError(
+            f"Template HTML content is {size} bytes, which exceeds the {max_bytes}-byte limit "
+            "(raise PDFGEN_MAX_TEMPLATE_BYTES to allow larger templates)"
+        )
 
     try:
         _env(environment).parse(html)

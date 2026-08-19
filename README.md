@@ -62,6 +62,7 @@ the working directory):
 | `PDFGEN_OUTPUT_DIR`               | `<project>/output`               | Directory hardcopies are written to (see `/generate`)       |
 | `PDFGEN_HOST`                     | `127.0.0.1`                      | Bind host used by the `pdfgenerator` CLI                    |
 | `PDFGEN_PORT`                     | `8000`                           | Bind port used by the `pdfgenerator` CLI                    |
+| `PDFGEN_MAX_TEMPLATE_BYTES`       | `4194304` (4 MB)                 | Max accepted size of uploaded template HTML (see `/templates`) |
 
 `PDFGEN_PRODUCTION_TEMPLATES_DIR` defaults to a `production/` sub-directory of
 `PDFGEN_TEMPLATES_DIR`, so setting the templates dir alone is enough; set it
@@ -178,7 +179,10 @@ Request body:
 - `environment` — mandatory; `Production` writes to `templates/production/`,
   any other value writes to `templates/`.
 - `html` — the full template source, using Jinja2 `{{ tag }}` placeholders.
-  Must be non-empty, syntactically valid Jinja2, and under 512 KB.
+  Must be non-empty, syntactically valid Jinja2, and within the size limit
+  (4 MB by default — raise `PDFGEN_MAX_TEMPLATE_BYTES` for larger templates;
+  self-contained templates that embed web fonts as base64 data URIs can easily
+  run past a megabyte).
 - `overwrite` — defaults to `false`; if a template with the same id already
   exists **in that environment** and `overwrite` isn't `true`, the request is
   rejected. An id already used in the *other* environment is not a conflict.

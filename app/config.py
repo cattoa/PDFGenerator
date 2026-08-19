@@ -42,6 +42,17 @@ class Settings(BaseSettings):
     output_dir: Path = _PROJECT_ROOT / "output"
     host: str = "127.0.0.1"
     port: int = 8000
+    # Defensive upper bound on uploaded template size. Templates are text, but
+    # self-contained ones embed their web fonts and images as base64 data URIs,
+    # which easily runs past a megabyte — hence the generous default.
+    max_template_bytes: int = 4_194_304
+
+    @field_validator("max_template_bytes")
+    @classmethod
+    def _positive_max_template_bytes(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("max_template_bytes must be a positive number of bytes")
+        return value
 
     @field_validator("templates_dir", "production_templates_dir", "output_dir")
     @classmethod
