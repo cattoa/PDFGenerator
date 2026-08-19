@@ -6,13 +6,13 @@ import io
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import AsyncIterator
+from typing import Annotated, AsyncIterator
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.config import get_settings
+from app.config import PRODUCTION_ENVIRONMENT, get_settings
 
 # A tag value can be a scalar, or an array/object of tag values — this lets
 # templates loop over structured data (e.g. a list of invoice line items)
@@ -36,13 +36,35 @@ from app.templates_service import (
     get_template_tag_schema,
     list_templates,
     load_template,
+    migrate_template,
+    migration_target_environment,
     save_template,
 )
+
+_ENVIRONMENT_DESCRIPTION = (
+    f"Deployment environment this request targets (mandatory). '{PRODUCTION_ENVIRONMENT}' "
+    "(case-insensitive) reads and writes templates in the production template store; "
+    "every other value (e.g. Development, Test, UAT) uses the shared non-production store."
+)
+
+# Mandatory `environment` tag for requests with no body (GET/DELETE), where it
+# has to travel as a query parameter instead of a JSON field.
+EnvironmentQuery = Annotated[str, Query(min_length=1, description=_ENVIRONMENT_DESCRIPTION)]
+
+
+def _environment_field() -> str:
+    """The mandatory `environment` tag as a request-body field."""
+    return Field(..., min_length=1, description=_ENVIRONMENT_DESCRIPTION)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    get_settings().output_dir.mkdir(parents=True, exist_ok=True)
+    settings = get_settings()
+    settings.output_dir.mkdir(parents=True, exist_ok=True)
+    # Both template stores exist up front, so listing an environment that has
+    # no templates yet is an empty response rather than a missing directory.
+    settings.templates_dir.mkdir(parents=True, exist_ok=True)
+    settings.templates_dir_for(PRODUCTION_ENVIRONMENT).mkdir(parents=True, exist_ok=True)
     renderer = PdfRenderer()
     await renderer.start()
     app.state.pdf_renderer = renderer
@@ -55,7 +77,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="PDF Generator API",
     description="Consume tags to fill a selected HTML template and generate a PDF.",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -66,6 +88,7 @@ def get_pdf_renderer(request: Request) -> PdfRenderer:
 
 class TemplateSummary(BaseModel):
     template_id: str
+    environment: str
     name: str
     tags: list[str]
     tag_schema: dict[str, TagSchema]
@@ -73,6 +96,7 @@ class TemplateSummary(BaseModel):
 
 class GenerateRequest(BaseModel):
     template_id: str = Field(..., description="Id of the template to use (its filename without .html)")
+    environment: str = _environment_field()
     tags: dict[str, TagValue] = Field(
         default_factory=dict,
         description=(
@@ -91,8 +115,25 @@ class CreateTemplateRequest(BaseModel):
     template_id: str = Field(
         ..., description="Id for the new template — letters, numbers, underscores and hyphens only"
     )
+    environment: str = _environment_field()
     html: str = Field(..., description="Full HTML content of the template, using Jinja2 {{ tag }} placeholders")
     overwrite: bool = Field(False, description="If true, replace an existing template with the same id")
+
+
+class MigrateTemplateRequest(BaseModel):
+    environment: str = _environment_field()
+    overwrite: bool = Field(
+        False,
+        description="If true, replace an existing template with the same id in the target environment",
+    )
+
+
+class MigrateTemplateResponse(BaseModel):
+    template_id: str
+    from_environment: str
+    to_environment: str
+    created: bool
+    template: TemplateSummary
 
 
 @app.get("/health")
@@ -101,14 +142,16 @@ def health() -> dict[str, str]:
 
 
 @app.get("/templates", response_model=list[TemplateSummary])
-def get_templates() -> list[dict]:
-    return list_templates()
+def get_templates(environment: EnvironmentQuery) -> list[dict]:
+    return list_templates(environment)
 
 
 @app.post("/templates", response_model=TemplateSummary)
 def create_template(request: CreateTemplateRequest, response: Response) -> dict:
     try:
-        result, created = save_template(request.template_id, request.html, overwrite=request.overwrite)
+        result, created = save_template(
+            request.template_id, request.html, request.environment, overwrite=request.overwrite
+        )
     except TemplateAlreadyExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except TemplateValidationError as exc:
@@ -118,23 +161,48 @@ def create_template(request: CreateTemplateRequest, response: Response) -> dict:
 
 
 @app.get("/templates/{template_id}/tags")
-def get_template_tags(template_id: str) -> dict:
+def get_template_tags(template_id: str, environment: EnvironmentQuery) -> dict:
     try:
-        placeholders = get_template_placeholders(template_id)
-        tag_schema = get_template_tag_schema(template_id)
+        placeholders = get_template_placeholders(template_id, environment)
+        tag_schema = get_template_tag_schema(template_id, environment)
     except TemplateNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {
         "template_id": template_id,
+        "environment": environment,
         "tags": sorted(placeholders),
         "tag_schema": tag_schema,
     }
 
 
-@app.delete("/templates/{template_id}", status_code=204)
-def delete_template_endpoint(template_id: str) -> Response:
+@app.post("/templates/{template_id}/migrate", response_model=MigrateTemplateResponse)
+def migrate_template_endpoint(template_id: str, request: MigrateTemplateRequest, response: Response) -> dict:
+    """Copy a template out of the caller's environment into the other store.
+
+    A non-production caller promotes their template into production; a
+    production caller copies the production template back down into the
+    shared non-production store.
+    """
     try:
-        delete_template(template_id)
+        template, created = migrate_template(template_id, request.environment, overwrite=request.overwrite)
+    except TemplateNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TemplateAlreadyExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    response.status_code = 201 if created else 200
+    return {
+        "template_id": template_id,
+        "from_environment": request.environment,
+        "to_environment": migration_target_environment(request.environment),
+        "created": created,
+        "template": template,
+    }
+
+
+@app.delete("/templates/{template_id}", status_code=204)
+def delete_template_endpoint(template_id: str, environment: EnvironmentQuery) -> Response:
+    try:
+        delete_template(template_id, environment)
     except TemplateNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return Response(status_code=204)
@@ -146,8 +214,8 @@ async def generate_pdf(
     renderer: PdfRenderer = Depends(get_pdf_renderer),
 ) -> StreamingResponse:
     try:
-        placeholders = get_template_placeholders(request.template_id)
-        template = load_template(request.template_id)
+        placeholders = get_template_placeholders(request.template_id, request.environment)
+        template = load_template(request.template_id, request.environment)
     except TemplateNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

@@ -1,7 +1,10 @@
 """Discovery, validation and rendering helpers for HTML PDF templates.
 
-Templates live as .html files under the configured templates directory
-(``Settings.templates_dir``, default ``<project root>/templates``).
+Templates live as .html files in an environment-specific store: the
+``Production`` environment uses ``Settings.production_templates_dir``
+(default ``<templates_dir>/production``), and every other environment
+shares ``Settings.templates_dir`` (default ``<project root>/templates``).
+Callers therefore pass their ``environment`` tag alongside the template id.
 A template's public id is its filename without the ``.html`` extension.
 Placeholders are plain Jinja2 variables, e.g. ``{{ customer_name }}``.
 """
@@ -14,7 +17,12 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, Template, TemplateSyntaxError, meta, nodes, select_autoescape
 
-from app.config import get_settings
+from app.config import (
+    NON_PRODUCTION_ENVIRONMENT,
+    PRODUCTION_ENVIRONMENT,
+    get_settings,
+    is_production,
+)
 
 # Template ids become filenames, so only allow a conservative charset —
 # this also rules out path traversal ("..", "/", "\\") by construction.
@@ -24,13 +32,22 @@ _TEMPLATE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 # and small; this guards against accidental/abusive multi-MB uploads).
 MAX_TEMPLATE_BYTES = 512_000
 
+def _templates_dir(environment: str) -> Path:
+    return get_settings().templates_dir_for(environment)
 
-def _templates_dir() -> Path:
-    return get_settings().templates_dir
+
+def migration_target_environment(environment: str) -> str:
+    """Return the environment a migrate request copies *into*.
+
+    Migration always reads from the caller's own environment: a
+    non-production caller promotes into production, and a production caller
+    copies back down into the shared non-production store.
+    """
+    return NON_PRODUCTION_ENVIRONMENT if is_production(environment) else PRODUCTION_ENVIRONMENT
 
 
 @lru_cache(maxsize=None)
-def _environment_for(templates_dir: Path) -> Environment:
+def _jinja_environment_for(templates_dir: Path) -> Environment:
     # autoescape is enabled for .html templates so tag values can never inject
     # raw HTML/script markup into the rendered document.
     return Environment(
@@ -39,8 +56,9 @@ def _environment_for(templates_dir: Path) -> Environment:
     )
 
 
-def _env() -> Environment:
-    return _environment_for(_templates_dir())
+def _env(environment: str) -> Environment:
+    """Return the Jinja2 environment loading from a deployment env's store."""
+    return _jinja_environment_for(_templates_dir(environment))
 
 
 class TemplateNotFoundError(Exception):
@@ -55,22 +73,23 @@ class TemplateAlreadyExistsError(Exception):
     """Raised when creating a template whose id already exists and overwrite=False."""
 
 
-def _resolve_filename(template_id: str) -> str:
+def _resolve_filename(template_id: str, environment: str) -> str:
     # Allowlist check: only simple ids that map to an existing .html file in
-    # the templates dir are accepted. This blocks path traversal (e.g. "../secret").
+    # the environment's templates dir are accepted. This blocks path traversal
+    # (e.g. "../secret").
     if not template_id or "/" in template_id or "\\" in template_id or ".." in template_id:
-        raise TemplateNotFoundError(f"Template '{template_id}' not found")
+        raise TemplateNotFoundError(f"Template '{template_id}' not found in environment '{environment}'")
     filename = f"{template_id}.html"
-    if not (_templates_dir() / filename).is_file():
-        raise TemplateNotFoundError(f"Template '{template_id}' not found")
+    if not (_templates_dir(environment) / filename).is_file():
+        raise TemplateNotFoundError(f"Template '{template_id}' not found in environment '{environment}'")
     return filename
 
 
-def get_template_placeholders(template_id: str) -> set[str]:
+def get_template_placeholders(template_id: str, environment: str) -> set[str]:
     """Return the set of top-level tag names referenced by a template."""
-    filename = _resolve_filename(template_id)
-    source = (_templates_dir() / filename).read_text(encoding="utf-8")
-    ast = _env().parse(source)
+    filename = _resolve_filename(template_id, environment)
+    source = (_templates_dir(environment) / filename).read_text(encoding="utf-8")
+    ast = _env(environment).parse(source)
     return meta.find_undeclared_variables(ast)
 
 
@@ -162,7 +181,7 @@ def _scan(
         _scan(child, loop_scope, top_level, schema)
 
 
-def get_template_tag_schema(template_id: str) -> dict[str, TagSchema]:
+def get_template_tag_schema(template_id: str, environment: str) -> dict[str, TagSchema]:
     """Return each top-level tag name mapped to its required (nested) fields.
 
     For a tag iterated as an array, e.g. ``{% for line in invoice_lines %}``
@@ -173,9 +192,9 @@ def get_template_tag_schema(template_id: str) -> dict[str, TagSchema]:
     ``line``, ``detail``) are excluded — they are not top-level tags the
     caller needs to supply.
     """
-    filename = _resolve_filename(template_id)
-    source = (_templates_dir() / filename).read_text(encoding="utf-8")
-    ast = _env().parse(source)
+    filename = _resolve_filename(template_id, environment)
+    source = (_templates_dir(environment) / filename).read_text(encoding="utf-8")
+    ast = _env(environment).parse(source)
 
     top_level = meta.find_undeclared_variables(ast)
     schema: dict[str, TagSchema] = dict.fromkeys(top_level)
@@ -185,29 +204,36 @@ def get_template_tag_schema(template_id: str) -> dict[str, TagSchema]:
     return _sort_schema(schema)
 
 
-def load_template(template_id: str) -> Template:
+def load_template(template_id: str, environment: str) -> Template:
     """Return the compiled Jinja2 template for a given template id."""
-    filename = _resolve_filename(template_id)
-    return _env().get_template(filename)
+    filename = _resolve_filename(template_id, environment)
+    return _env(environment).get_template(filename)
 
 
-def describe_template(template_id: str) -> dict:
-    """Return metadata (id, display name, tags, tag schema) for one template."""
+def describe_template(template_id: str, environment: str) -> dict:
+    """Return metadata (id, environment, display name, tags, tag schema) for one template."""
     return {
         "template_id": template_id,
+        "environment": environment,
         "name": template_id.replace("_", " ").replace("-", " ").title(),
-        "tags": sorted(get_template_placeholders(template_id)),
-        "tag_schema": get_template_tag_schema(template_id),
+        "tags": sorted(get_template_placeholders(template_id, environment)),
+        "tag_schema": get_template_tag_schema(template_id, environment),
     }
 
 
-def list_templates() -> list[dict]:
-    """Return metadata (id, display name, required tags) for every template."""
-    return [describe_template(path.stem) for path in sorted(_templates_dir().glob("*.html"))]
+def list_templates(environment: str) -> list[dict]:
+    """Return metadata (id, display name, required tags) for every template
+    in the store backing ``environment``.
+
+    Only files directly in the store are listed, so the nested production
+    sub-directory is never reported as part of the non-production store.
+    """
+    return [describe_template(path.stem, environment) for path in sorted(_templates_dir(environment).glob("*.html"))]
 
 
-def save_template(template_id: str, html: str, *, overwrite: bool = False) -> tuple[dict, bool]:
-    """Create (or, with ``overwrite=True``, replace) a template file.
+def save_template(template_id: str, html: str, environment: str, *, overwrite: bool = False) -> tuple[dict, bool]:
+    """Create (or, with ``overwrite=True``, replace) a template file in the
+    store backing ``environment``.
 
     Validates the template id (safe charset only) and that ``html`` is
     non-empty, within the size limit, and syntactically valid Jinja2, then
@@ -227,14 +253,14 @@ def save_template(template_id: str, html: str, *, overwrite: bool = False) -> tu
         raise TemplateValidationError(f"Template HTML content exceeds the {MAX_TEMPLATE_BYTES}-byte limit")
 
     try:
-        _env().parse(html)
+        _env(environment).parse(html)
     except TemplateSyntaxError as exc:
         raise TemplateValidationError(f"Invalid Jinja2 template syntax: {exc.message}") from exc
 
-    templates_dir = _templates_dir()
+    templates_dir = _templates_dir(environment)
     target = templates_dir / f"{template_id}.html"
     if target.exists() and not overwrite:
-        raise TemplateAlreadyExistsError(f"Template '{template_id}' already exists")
+        raise TemplateAlreadyExistsError(f"Template '{template_id}' already exists in environment '{environment}'")
     created = not target.exists()
 
     templates_dir.mkdir(parents=True, exist_ok=True)
@@ -242,10 +268,45 @@ def save_template(template_id: str, html: str, *, overwrite: bool = False) -> tu
     tmp_path.write_text(html, encoding="utf-8")
     tmp_path.replace(target)
 
-    return describe_template(template_id), created
+    return describe_template(template_id, environment), created
 
 
-def delete_template(template_id: str) -> None:
-    """Delete a template file. Raises ``TemplateNotFoundError`` if it doesn't exist."""
-    filename = _resolve_filename(template_id)
-    (_templates_dir() / filename).unlink()
+def migrate_template(template_id: str, environment: str, *, overwrite: bool = False) -> tuple[dict, bool]:
+    """Copy a template between the non-production and production stores.
+
+    The source is always the caller's own ``environment``: a non-production
+    caller promotes ``<templates_dir>/<id>.html`` into the production store,
+    and a production caller copies the production copy back down into the
+    shared non-production store. Returns the migrated template's metadata (as
+    seen in the target environment) and whether the target copy was newly
+    created (``True``) versus overwritten (``False``).
+    """
+    target_environment = migration_target_environment(environment)
+
+    # Raises TemplateNotFoundError if the source environment has no such template.
+    filename = _resolve_filename(template_id, environment)
+    source = _templates_dir(environment) / filename
+    target_dir = _templates_dir(target_environment)
+    target = target_dir / filename
+
+    if target.exists() and not overwrite:
+        raise TemplateAlreadyExistsError(
+            f"Template '{template_id}' already exists in environment '{target_environment}'"
+        )
+    created = not target.exists()
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.with_suffix(".html.tmp")
+    tmp_path.write_bytes(source.read_bytes())
+    tmp_path.replace(target)
+
+    return describe_template(template_id, target_environment), created
+
+
+def delete_template(template_id: str, environment: str) -> None:
+    """Delete a template file from an environment's store.
+
+    Raises ``TemplateNotFoundError`` if it doesn't exist there.
+    """
+    filename = _resolve_filename(template_id, environment)
+    (_templates_dir(environment) / filename).unlink()
